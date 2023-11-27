@@ -1,0 +1,254 @@
+#cloud-config
+
+# Merge strategy
+merge_how:
+  - name: list
+    settings: [append]
+  - name: dict
+    settings: [no_replace, recurse_list]
+
+# Update and install packages
+package_update: true
+package_upgrade: false
+package_reboot_if_required: false
+
+ssh_pwauth: false
+
+users:
+  - name: prichinin.ed
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCsbvradN5XesSbuu/LkUqyzEsE6cQoTNlftN6mfZPr9YNqrBE89wJRh4qiue0UQTA/NVaQjRe7llpQ3qNyuNxqV0cvrvLNIIuMiiKjAbDHqev+pJQ4Cu2/P9ZnQn373TbxTv11BrS51s2UeD0rdjhYVloIUX0uAw+nMkVsPou00+8N8lXXq+l7pUsnrrCEe9UmzjxwNefwM5KGYpZ4yrYm8421YNwBP2SUaPTNOKYM6tu+FvscjL6vIJKG6Q0o+YR3d4gC6r1XzhlnNeFetBKppcTvn2N4aLIFwuFPN0aSPV41NBSnNze0+UcEKnRxRCDdAnMVIW1C1tV8n9lFGswv9rcSkuGHRYXulkVTueecsGJzBOumaBCurJIk44rejfqW1gWwLfifOtJo4a2mb3prATCRVC1I6IT14yCwVCb2DiHq2KOFF7jpSfEJrDbN9etce1ww6poohyzxE/71VjB9JncU8ll4wrR/iSn28ycSPQLw9UFEzLCwZ8nrpUV5EP8=
+
+apt:
+  preserve_sources_list: false
+  primary:
+    - arches: [amd64]
+      uri: https://mirror.yandex.ru/ubuntu/
+  security:
+    - arches: [amd64]
+      uri: https://mirror.yandex.ru/ubuntu/
+  sources:
+    docker:
+      source: deb https://mirror.yandex.ru/mirrors/docker jammy stable
+      keyid: 8D81803C0EBFCD88
+
+timezone: Europe/Moscow
+
+packages:
+  - docker-ce
+  - docker-ce-cli 
+  - containerd.io
+  - gnupg
+  - iptables-persistent
+
+write_files:
+  - owner: root:root
+    path: /opt/docker-compose.yaml
+    permissions: '0644'
+    content: |
+      version: '3.9'
+      services:
+        init-db:
+          build: .
+          volumes:
+            - ./app_config.yaml:/opt/bingo/config.yaml:ro
+            - ./logs:/opt/bongo/logs/a42f466641
+          command: /go/bingo prepare_db
+          restart: "no"
+        app:
+          build: .
+          expose:
+            - "27236"
+          restart: always
+          volumes:
+            - ./app_config.yaml:/opt/bingo/config.yaml:ro
+          command: /go/bingo run_server
+          depends_on:
+            init-db:
+                condition: service_completed_successfully
+          deploy:
+            resources:
+              limits:
+                memory: 200m
+          healthcheck:
+            test: ["CMD", "curl", "--fail", "http://127.0.0.1:27236/ping"]
+            interval: 1s
+            retries: 2
+            start_period: 1s
+            timeout: 1s
+        nginx:
+          build: 
+            context: .
+            dockerfile: Dockerfile.nginx
+          restart: always
+          volumes:
+            - ./nginx.conf:/app/nginx.conf:ro
+            - ./server.crt:/etc/ssl/certs/server.crt
+            - ./server.key:/etc/ssl/private/server.key
+          depends_on:
+            - app
+          ports:
+            - "80:80/tcp"
+            - "443:443/tcp"
+          deploy:
+            resources:
+              limits:
+                memory: 20m
+        autoheal:
+          restart: unless-stopped
+          image: willfarrell/autoheal
+          environment:
+            - AUTOHEAL_CONTAINER_LABEL=all
+            - AUTOHEAL_INTERVAL=1
+          volumes:
+            - /var/run/docker.sock:/var/run/docker.sock
+          deploy:
+            resources:
+              limits:
+                memory: 20m
+      networks:
+        default:
+          driver: bridge
+  - owner: root:root
+    path: /opt/app_config.yaml
+    permissions: '0644'
+    content: |
+      student_email: zhenya17@gmail.com
+      postgres_cluster:
+        hosts:
+        - address: c-${db_id}.rw.mdb.yandexcloud.net 
+          port: 6432
+        user: ${db_user}
+        password: ${db_pass}
+        db_name: ${db_name}
+        ssl_mode: disable
+        use_closest_node: false
+  - owner: root:root
+    path: /opt/nginx.conf
+    permissions: '0644'
+    content: |
+      pcre_jit on;
+      error_log /dev/stdout info;
+      worker_processes  1;
+      events {
+        worker_connections   1000;
+      }
+      http {
+        server_tokens off;
+        lua_shared_dict prometheus_metrics 10M;
+        lua_package_path "/usr/local/openresty/site/lualib/?.lua;;";
+        lua_code_cache on;
+        init_worker_by_lua_block {
+          prometheus = require("prometheus").init("prometheus_metrics", {sync_interval=0.4})
+          metric_requests = prometheus:counter("requests_total", "Number of HTTP requests", {"host", "status", "method", "endpoint"})
+          metric_connections = prometheus:gauge("connections", "Number of HTTP connections", {"state"})
+          metric_latency = prometheus:histogram("request_duration_seconds", "HTTP request latency status", {"host", "status", "method", "endpoint"}, {0.0001, 0.01, 0.1, 0.2, 0.4})
+        }
+        log_by_lua_block {
+          local endpoint = string.gsub(ngx.unescape_uri(ngx.var.uri), "%d", "")
+          metric_requests:inc(1, {ngx.var.server_name, ngx.var.status, ngx.var.request_method, endpoint})
+          metric_latency:observe(tonumber(ngx.var.request_time), {ngx.var.server_name, ngx.var.status, ngx.var.request_method, endpoint})
+        }
+        access_log /dev/stdout;
+        proxy_cache_path /app/cache keys_zone=cache:10m inactive=1h;
+        upstream keepalive-upstream {
+          server app:27236;
+          server ${ext_ip}:80 backup;
+          keepalive 32;
+        }
+
+        # proxy section
+        proxy_set_header Connection "";
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_next_upstream_timeout 1;
+        proxy_next_upstream_tries 2;
+        proxy_next_upstream error timeout http_502 http_504;
+        # end of proxy section
+
+        #limit_req_zone global zone=limitreqs:20m rate=100r/s;
+        #limit_req_status 429;
+  
+        server {
+          listen 80;
+          gzip on;
+          gzip_comp_level 5;
+          gzip_types application/json;
+
+          location /metrics {
+            access_log off;
+            allow 10.10.0.33/32;
+            deny all;
+            content_by_lua 'prometheus:collect()';
+          }
+          location = /ping {
+            proxy_pass http://app:27236;
+          }
+          location / {
+            proxy_pass http://keepalive-upstream;
+            #limit_req zone=limitreqs burst=15 delay=3;
+          }
+          location = /long_dummy {
+            proxy_pass http://keepalive-upstream;
+            proxy_buffering on;
+            proxy_cache cache;
+            proxy_cache_key $uri;
+            proxy_cache_valid 200 60s;
+          }
+        }
+        server {
+          listen 443 ssl reuseport;
+          server_name yandex.finalwork;
+          ssl_certificate      /etc/ssl/certs/server.crt;
+          ssl_certificate_key  /etc/ssl/private/server.key;
+          ssl_protocols TLSv1.2 TLSv1.3;
+          location / {
+            limit_req zone=limitreqs burst=15 delay=3;
+            proxy_pass http://keepalive-upstream;
+          }
+        }
+      }
+  - owner: root:root
+    path: /opt/passwd.minimal
+    permissions: '0644'
+    content: 'nobody:x:65534:65534:Nobody:/:'
+  - owner: root:root
+    path: /opt/Dockerfile
+    permissions: '0644'
+    content: |
+      FROM scratch
+      COPY --from=tarampampam/curl:8.4.0 /bin/curl /bin/curl
+      ADD bingo.bin /go/bingo
+      ADD passwd.minimal /etc/passwd
+      RUN ln -s /dev/stdout /opt/bongo/logs/a42f466641/main.log
+      USER 65534
+  - owner: root:root
+    path: /opt/Dockerfile.nginx
+    permissions: '0644'
+    content: |
+      FROM openresty/openresty:1.21.4.1-bullseye
+      RUN printf "deb [trusted=yes] https://mirror.yandex.ru/debian bullseye main\n" > /etc/apt/sources.list && \
+          printf "deb [trusted=yes] https://mirror.yandex.ru/debian bullseye-updates main\n" >> /etc/apt/sources.list && \
+          printf "deb [trusted=yes] https://openresty.org/package/debian bullseye openresty" >> /etc/apt/sources.list && \
+          apt-get update && \
+          apt-get install -y --no-install-recommends curl openresty-opm && \
+          apt-get autoremove -y && \
+          rm -rf /var/lib/apt/lists/*  && \
+          opm get knyar/nginx-lua-prometheus=0.20220527
+      CMD ["/usr/bin/openresty", "-c", "/app/nginx.conf", "-g", "daemon off;"]
+
+runcmd:
+  - systemctl enable --no-block docker
+# prepare (todo move to build )
+  - curl --silent -o /opt/bingo.bin https://storage.yandexcloud.net/final-homework/bingo
+  - chmod +x /opt/bingo.bin
+# SSL
+  - openssl req -subj '/CN=yandex.finalwork/O=Test/C=RU' -new -newkey rsa:2048 -sha256 -days 365 -nodes -x509 -keyout /opt/server.key -out /opt/server.crt
+  - chown 100:0 /opt/server.key
+# ban google
+  - iptables -I DOCKER-USER 1 -d 8.8.8.8/32 -j REJECT
+  - netfilter-persistent save
+# start app
+  - cd /opt && docker compose up -d
