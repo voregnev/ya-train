@@ -29,6 +29,13 @@ resource "yandex_vpc_security_group" "app_sg" {
   }
 
   ingress {
+    protocol          = "TCP"
+    description       = "NLB health check http3"
+    predefined_target = "loadbalancer_healthchecks"
+    port              = 81
+  }
+
+  ingress {
     protocol       = "TCP"
     description    = "WEB"
     v4_cidr_blocks = ["0.0.0.0/0"]
