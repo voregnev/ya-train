@@ -72,9 +72,7 @@ requests_total{host="",status="200",method="GET",endpoint="/db_dummy"} 4129
 
 # How to Deploy
 
-1. ```
-export YC_TOKEN=$(yc iam create-token) 
-```
+1. `export YC_TOKEN=$(yc iam create-token)`
 2. replace cloud-id and folder-id with own values in variables.tf
 3. `terraform init`
 4. `terraform apply`
