@@ -9,3 +9,11 @@ variable "db_name" {
 variable "db_user" {
   default = "app"
 }
+
+variable "cloud_id" {
+  default = "b1gi4rfq1lfkt0a0hts8"
+}
+
+variable "folder_id" {
+  default = "b1gh8pvvno3cgpt72v22"
+}

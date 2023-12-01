@@ -64,6 +64,7 @@ write_files:
           restart: always
           volumes:
             - ./app_config.yaml:/opt/bingo/config.yaml:ro
+            - ./logs:/opt/bongo/logs/a42f466641
           command: /go/bingo run_server
           depends_on:
             init-db:
@@ -96,6 +97,21 @@ write_files:
             resources:
               limits:
                 memory: 20m
+        nginx-http3:
+          image: macbre/nginx-http3:1.25.2
+          restart: always
+          volumes:
+            - ./nginx-quic.conf://etc/nginx/conf.d/nginx.conf:ro
+            - ./server.crt:/etc/nginx/ssl/server.crt
+            - ./server.key:/etc/nginx/ssl/server.key
+          depends_on:
+            - app
+          ports:
+            - "443:443/udp"
+          deploy:
+            resources:
+              limits:
+                memory: 40m
         autoheal:
           restart: unless-stopped
           image: willfarrell/autoheal
@@ -125,6 +141,27 @@ write_files:
         db_name: ${db_name}
         ssl_mode: disable
         use_closest_node: false
+  - owner: root:root
+    path: /opt/nginx-quic.conf
+    permissions: '0644'
+    content: |
+      server {
+          listen 443 quic reuseport;
+          listen 443 ssl;
+          http2 on;
+
+          server_name yandex.finalwork;
+          ssl_certificate     /etc/nginx/ssl/server.crt;
+          ssl_certificate_key /etc/nginx/ssl/server.key;
+          ssl_protocols TLSv1.2 TLSv1.3;
+          ssl_early_data on;
+          add_header alt-svc 'h3=":443"; ma=86400';
+          add_header QUIC-Status $http3;
+
+          location / {
+            proxy_pass http://nginx;
+          }
+      }
   - owner: root:root
     path: /opt/nginx.conf
     permissions: '0644'
@@ -161,6 +198,7 @@ write_files:
 
         # proxy section
         proxy_set_header Connection "";
+        proxy_set_header X-Real-IP $remote_addr;
         proxy_http_version 1.1;
         proxy_buffering off;
         proxy_next_upstream_timeout 1;
@@ -205,7 +243,7 @@ write_files:
           ssl_certificate_key  /etc/ssl/private/server.key;
           ssl_protocols TLSv1.2 TLSv1.3;
           location / {
-            limit_req zone=limitreqs burst=15 delay=3;
+            #limit_req zone=limitreqs burst=15 delay=3;
             proxy_pass http://keepalive-upstream;
           }
         }
@@ -219,10 +257,11 @@ write_files:
     permissions: '0644'
     content: |
       FROM scratch
+      ADD passwd.minimal /etc/passwd
       COPY --from=tarampampam/curl:8.4.0 /bin/curl /bin/curl
       ADD bingo.bin /go/bingo
-      ADD passwd.minimal /etc/passwd
-      RUN ln -s /dev/stdout /opt/bongo/logs/a42f466641/main.log
+      # TODO (requires sh)
+      # RUN ln -s /dev/stdout /opt/bongo/logs/a42f466641/main.log
       USER 65534
   - owner: root:root
     path: /opt/Dockerfile.nginx
@@ -244,7 +283,8 @@ runcmd:
 # prepare (todo move to build )
   - curl --silent -o /opt/bingo.bin https://storage.yandexcloud.net/final-homework/bingo
   - chmod +x /opt/bingo.bin
-# SSL
+  - chown 65534:65534 -R /opt/logs
+# SSL (self signed cert)
   - openssl req -subj '/CN=yandex.finalwork/O=Test/C=RU' -new -newkey rsa:2048 -sha256 -days 365 -nodes -x509 -keyout /opt/server.key -out /opt/server.crt
   - chown 100:0 /opt/server.key
 # ban google

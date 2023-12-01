@@ -4,14 +4,14 @@ resource "yandex_iam_service_account" "ig_sa" {
 }
 
 resource "yandex_resourcemanager_folder_iam_member" "ig_sa_permission" {
-  folder_id = var.folder_id
   role      = "editor"
+  folder_id = var.folder_id
   member    = "serviceAccount:${yandex_iam_service_account.ig_sa.id}"
 }
 
 resource "yandex_compute_instance_group" "app_ig" {
   name                = "app-instance-group"
-  folder_id           = var.folder_id
+
   service_account_id  = yandex_iam_service_account.ig_sa.id
   deletion_protection = false
 
