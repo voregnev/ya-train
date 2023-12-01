@@ -15,7 +15,15 @@
 Чего не сделано:
 - Не автоматизировано развертывание Grafana и Prometheus (но развернуто руками и реализованы метрики).
 - Пароль к БД передается через cloud-config (по правильному было бы через интеграцию с lockbox сделать).
-- Не автоматизировано добавление индексов в БД (выглядит как добавить еще один контейнер который сделает `CREATE UNIQUE INDEX ON customers (id); CREATE UNIQUE INDEX ON movies (id); CREATE UNIQUE INDEX ON sessions (id); CREATE INDEX ON movies(year, name); CREATE INDEX ON sessions(customer_id); CREATE INDEX ON sessions(movie_id);`
+- Не автоматизировано добавление индексов в БД (выглядит как добавить еще один контейнер который сделает:
+```
+CREATE UNIQUE INDEX ON customers (id);
+CREATE UNIQUE INDEX ON movies (id);
+CREATE UNIQUE INDEX ON sessions (id);
+CREATE INDEX ON movies(year, name);
+CREATE INDEX ON sessions(customer_id);
+CREATE INDEX ON sessions(movie_id);
+```
 - более строгое описание доступных эндпоинтов на реверспрокси.
 - http3 работает только если вручную на одной из пары выключить nginx контейнеры (связано с особенностями работы балансировки UDP на NLB, "Обратите внимание, что UDP в балансировщике работает в режиме round robin per-packet.");
 - не автоматизировал развертывание DB (используется MDB);
